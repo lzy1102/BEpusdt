@@ -49,6 +49,9 @@ type evm struct {
 	Client           *http.Client
 	blockScanQueue   *chanx.UnboundedChan[evmBlock]
 	LookbackInterval time.Duration // 回溯时每批入队的间隔，控制 RPC 调用速率；默认 500ms
+	lookbackNext     int64         // 回溯游标，0 表示当前没有进行中的回溯
+	lookbackEnd      int64
+	lookbackOrders   []int64 // 当前回溯覆盖的订单，完整入队后再标记完成
 }
 
 type evmBlock struct {
@@ -131,9 +134,20 @@ func (e *evm) lookbackBlocks(ctx context.Context) {
 		return
 	}
 
-	startAt, endAt, ok := getLookbackUnix(model.Network(e.Network))
-	if !ok {
-		return
+	if e.lookbackNext == 0 {
+		startAt, endAt, orderIDs, ok := pendingLookbackUnix(model.Network(e.Network))
+		if !ok {
+			return
+		}
+
+		start, end := blockapi.New().GetBoundaryHeights(startAt, endAt, e.Network)
+		if start <= 0 || end < start {
+			log.Task.Warn(fmt.Sprintf("%s 回溯高度范围无效: start=%d end=%d", e.Network, start, end))
+
+			return
+		}
+
+		e.lookbackNext, e.lookbackEnd, e.lookbackOrders = start, end, orderIDs
 	}
 
 	interval := e.LookbackInterval
@@ -141,8 +155,7 @@ func (e *evm) lookbackBlocks(ctx context.Context) {
 		interval = time.Millisecond * 300
 	}
 
-	start, end := blockapi.New().GetBoundaryHeights(startAt, endAt, e.Network)
-	for i := start; i <= end; i += blockParseMaxNum {
+	for e.lookbackNext <= e.lookbackEnd {
 		select {
 		case <-ctx.Done():
 			return
@@ -151,13 +164,18 @@ func (e *evm) lookbackBlocks(ctx context.Context) {
 		if syncBreak(e.Network, e.blockScanQueue.Len()) {
 			return
 		}
-		to := i + blockParseMaxNum - 1
-		if to > end {
-			to = end
+
+		to := e.lookbackNext + blockParseMaxNum - 1
+		if to > e.lookbackEnd {
+			to = e.lookbackEnd
 		}
-		e.blockScanQueue.In <- evmBlock{From: i, To: to}
+		e.blockScanQueue.In <- evmBlock{From: e.lookbackNext, To: to}
+		e.lookbackNext = to + 1
 		time.Sleep(interval)
 	}
+
+	markLookbackDone(e.lookbackOrders)
+	e.lookbackNext, e.lookbackEnd, e.lookbackOrders = 0, 0, nil
 }
 
 func (e *evm) blockDispatch(ctx context.Context) {
@@ -357,9 +375,20 @@ func (e *evm) parseEventTransfer(b evmBlock, timestamp map[string]time.Time) ([]
 			continue
 		}
 
-		from := fmt.Sprintf("0x%s", topics[1].String()[26:])
-		recv := fmt.Sprintf("0x%s", topics[2].String()[26:])
-		amount, ok := big.NewInt(0).SetString(itm.Get("data").String()[2:], 16)
+		fromTopic, recvTopic := topics[1].String(), topics[2].String()
+		if len(fromTopic) < 66 || len(recvTopic) < 66 {
+
+			continue
+		}
+
+		from := fmt.Sprintf("0x%s", fromTopic[26:])
+		recv := fmt.Sprintf("0x%s", recvTopic[26:])
+		amountData := itm.Get("data").String()
+		if len(amountData) < 2 {
+
+			continue
+		}
+		amount, ok := big.NewInt(0).SetString(amountData[2:], 16)
 		if !ok || amount.Sign() <= 0 {
 
 			continue

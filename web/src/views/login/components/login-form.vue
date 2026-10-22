@@ -18,7 +18,7 @@
         </a-form-item>
         <a-form-item field="remember">
           <div class="remember">
-            <a-checkbox v-model="form.remember">记住密码</a-checkbox>
+            <a-checkbox v-model="form.remember">记住账号</a-checkbox>
             <div class="forgot-password" @click="handleForgotPassword">忘记密码</div>
           </div>
         </a-form-item>
@@ -75,17 +75,23 @@ const rules = ref({
   ]
 });
 
-// 组件挂载时读取记住的密码
+// 组件挂载时读取记住的账号（不保存密码）
 onMounted(() => {
   const savedInfo = localStorage.getItem(REMEMBER_KEY);
   if (savedInfo) {
     try {
-      const { username, password, remember } = JSON.parse(savedInfo);
-      form.value.username = decrypt(username);
-      form.value.password = decrypt(password);
-      form.value.remember = remember;
+      const saved = JSON.parse(savedInfo);
+      form.value.username = decrypt(saved.username);
+      form.value.remember = saved.remember;
+      // 清理旧版本曾经保存的密码
+      if (saved.password) {
+        localStorage.setItem(
+          REMEMBER_KEY,
+          JSON.stringify({ username: saved.username, remember: saved.remember })
+        );
+      }
     } catch (error) {
-      console.error("读取记住的密码失败:", error);
+      console.error("读取记住的账号失败:", error);
       localStorage.removeItem(REMEMBER_KEY);
     }
   }
@@ -99,17 +105,15 @@ const onSubmit = async ({ errors }: any) => {
 
 // 登录
 const onLogin = async () => {
-  // 处理记住密码
+  // 只记住账号，不在 localStorage 保存密码
   if (form.value.remember) {
-    // 保存加密后的账号密码
     const rememberInfo = {
       username: encrypt(form.value.username),
-      password: encrypt(form.value.password),
       remember: true
     };
     localStorage.setItem(REMEMBER_KEY, JSON.stringify(rememberInfo));
   } else {
-    // 不记住密码时清除存储
+    // 不记住账号时清除存储
     localStorage.removeItem(REMEMBER_KEY);
   }
 

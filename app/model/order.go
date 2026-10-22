@@ -105,9 +105,20 @@ type MethodItem struct {
 
 func (o *Order) SetCanceled() error {
 	core.New()
+
+	res := Db.Model(&Order{}).
+		Where("id = ? AND status = ?", o.ID, OrderStatusWaiting).
+		Update("status", OrderStatusCanceled)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return errors.New("订单状态已变更，无法取消")
+	}
+
 	o.Status = OrderStatusCanceled
 
-	return Db.Save(o).Error
+	return nil
 }
 
 // CanReselectPayment 判断订单是否支持重选交易类型
@@ -131,37 +142,90 @@ func (o *Order) MatchFingerprint(fingerprint string) bool {
 	return !o.FingerprintBound() || o.ClientFingerprint == fingerprint
 }
 
-func (o *Order) SetExpired() {
+func (o *Order) SetExpired() error {
+	res := Db.Model(&Order{}).
+		Where("id = ? AND status = ?", o.ID, OrderStatusWaiting).
+		Update("status", OrderStatusExpired)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return errors.New("订单状态已变更，无法标记过期")
+	}
+
 	o.Status = OrderStatusExpired
 
-	Db.Save(o)
+	return nil
 }
 
-func (o *Order) SetSuccess() {
+func (o *Order) SetSuccess() error {
+	res := Db.Model(&Order{}).
+		Where("id = ? AND status = ?", o.ID, OrderStatusConfirming).
+		Update("status", OrderStatusSuccess)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return errors.New("订单状态已变更，无法标记成功")
+	}
+
 	o.Status = OrderStatusSuccess
 
-	Db.Save(o)
+	return nil
 }
 
-func (o *Order) SetFailed() {
+func (o *Order) SetFailed() error {
+	res := Db.Model(&Order{}).
+		Where("id = ? AND status = ?", o.ID, OrderStatusConfirming).
+		Update("status", OrderStatusFailed)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return errors.New("订单状态已变更，无法标记失败")
+	}
+
 	o.Status = OrderStatusFailed
 
-	Db.Save(o)
+	return nil
 }
 
 func (o *Order) MarkConfirming(blockNum int, from, hash string, at time.Time, amount decimal.Decimal) error {
+	var orderAmount, orderMoney = o.Amount, o.Money
+	if o.AddressLocked {
+		rate, _ := decimal.NewFromString(o.Rate)
+		orderAmount = amount.String()
+		orderMoney = rate.Mul(amount).String()
+	}
+
+	// 仅允许等待中/已过期的订单进入确认中，避免重复转账或并发回溯覆盖已经绑定的交易
+	res := Db.Model(&Order{}).
+		Where("id = ? AND status IN ?", o.ID, []int{OrderStatusWaiting, OrderStatusExpired}).
+		Updates(map[string]any{
+			"from_address":  from,
+			"confirmed_at":  at,
+			"ref_hash":      hash,
+			"ref_block_num": blockNum,
+			"status":        OrderStatusConfirming,
+			"amount":        orderAmount,
+			"money":         orderMoney,
+		})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return errors.New("订单状态已变更，跳过重复匹配")
+	}
+
 	o.FromAddress = from
 	o.ConfirmedAt = &at
 	o.RefHash = hash
 	o.RefBlockNum = blockNum
 	o.Status = OrderStatusConfirming
-	if o.AddressLocked {
-		rate, _ := decimal.NewFromString(o.Rate)
-		o.Amount = amount.String()
-		o.Money = rate.Mul(amount).String()
-	}
+	o.Amount = orderAmount
+	o.Money = orderMoney
 
-	return Db.Save(o).Error
+	return nil
 }
 
 func (o *Order) SetNotifyState(state int) error {
@@ -208,7 +272,7 @@ func (o *Order) GetTxUrl() string {
 func (o *Order) RedirectUrl() string {
 	var redirect = o.ReturnUrl
 	if o.Status == OrderStatusSuccess && o.ApiType == OrderApiTypeEpay {
-		redirect = fmt.Sprintf("%s?%s", redirect, o.BuildNotifyParams())
+		redirect = utils.AppendQuery(redirect, o.BuildNotifyParams())
 	}
 
 	return redirect
@@ -223,6 +287,38 @@ func (o *Order) BuildNotifyParams() string {
 	return fmt.Sprintf("%s&sign=%s", params, signStr)
 }
 
+func (o *Order) IsCurrencyAllowed(crypto Crypto) bool {
+	if o.CurrencyLimit == "" {
+
+		return true
+	}
+
+	var hasWhitelist bool
+	var whitelisted bool
+	for _, item := range strings.Split(o.CurrencyLimit, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+
+			continue
+		}
+		if strings.HasPrefix(item, "-") {
+			if strings.EqualFold(strings.TrimPrefix(item, "-"), string(crypto)) {
+
+				return false
+			}
+
+			continue
+		}
+
+		hasWhitelist = true
+		if strings.EqualFold(item, string(crypto)) {
+			whitelisted = true
+		}
+	}
+
+	return !hasWhitelist || whitelisted
+}
+
 func (o *Order) GetMethods(crypto Crypto) []MethodItem {
 	var items = make([]MethodItem, 0)
 	if o.Status != OrderStatusWaiting {
@@ -234,33 +330,12 @@ func (o *Order) GetMethods(crypto Crypto) []MethodItem {
 
 	allTrades := GetAllTradeConfig()
 
-	// 解析限定币种
-	var whitelist = make(map[string]bool)
-	var blacklist = make(map[string]bool)
-	if o.CurrencyLimit != "" {
-		for _, c := range strings.Split(o.CurrencyLimit, ",") {
-			c = strings.TrimSpace(c)
-			if strings.HasPrefix(c, "-") {
-				blacklist[strings.ToUpper(strings.TrimPrefix(c, "-"))] = true
-			} else {
-				whitelist[strings.ToUpper(c)] = true
-			}
-		}
-	}
-
 	for tradeTypeStr, typeConf := range allTrades {
 		// 如果指定了货币，则进行过滤
 		if crypto != "" && typeConf.Crypto != crypto {
 			continue
 		}
-
-		// Check blacklist
-		if len(blacklist) > 0 && blacklist[string(typeConf.Crypto)] {
-			continue
-		}
-
-		// Check whitelist
-		if len(whitelist) > 0 && !whitelist[string(typeConf.Crypto)] {
+		if !o.IsCurrencyAllowed(typeConf.Crypto) {
 			continue
 		}
 
@@ -373,13 +448,17 @@ func GetNotifyFailedTradeOrders() ([]Order, error) {
 // CalcTradeAmount 计算当前实际可用的交易金额
 func CalcTradeAmount(wallets []Wallet, rate decimal.Decimal, p OrderParams) (Wallet, string, error) {
 	if p.AddressLocked {
-		return LockTradeAddress(wallets, p.TradeType)
+		return LockTradeAddress(wallets, p.TradeType, p.ExcludeOrderID)
 	}
 
 	var orders []Order
 	lock := make(map[string]bool)
 	status := []int{OrderStatusConfirming, OrderStatusWaiting}
-	Db.Where("status in (?) and trade_type = ?", status, p.TradeType).Find(&orders)
+	query := Db.Where("status in (?) and trade_type = ?", status, p.TradeType)
+	if p.ExcludeOrderID != 0 {
+		query = query.Where("id <> ?", p.ExcludeOrderID)
+	}
+	query.Find(&orders)
 	for _, order := range orders {
 		lock[order.Address+order.Amount] = true
 	}
@@ -415,12 +494,16 @@ func CalcTradeAmount(wallets []Wallet, rate decimal.Decimal, p OrderParams) (Wal
 }
 
 // LockTradeAddress 检测交易地址，独占使用
-func LockTradeAddress(wallets []Wallet, t TradeType) (Wallet, string, error) {
+func LockTradeAddress(wallets []Wallet, t TradeType, excludeOrderID int64) (Wallet, string, error) {
 	zero := decimal.Zero.String()
 	status := []int{OrderStatusConfirming, OrderStatusWaiting}
 	for _, w := range wallets {
 		var o Order
-		Db.Where("match_address = ? and status in (?) and trade_type = ? and address_locked = ?", w.GetMatchAddr(), status, t, true).Order("id desc").Limit(1).Find(&o)
+		query := Db.Where("match_address = ? and status in (?) and trade_type = ? and address_locked = ?", w.GetMatchAddr(), status, t, true)
+		if excludeOrderID != 0 {
+			query = query.Where("id <> ?", excludeOrderID)
+		}
+		query.Order("id desc").Limit(1).Find(&o)
 		if o.ID == 0 {
 			return w, zero, nil
 		}

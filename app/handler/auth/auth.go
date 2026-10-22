@@ -15,7 +15,32 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+const (
+	loginFailLimit  = 5
+	loginFailWindow = time.Minute * 5
+)
+
 type Auth struct {
+}
+
+func loginFailKey(ip string) string {
+
+	return "login_fail:" + ip
+}
+
+func loginFailCount(ip string) int {
+	if v, ok := cache.Get(loginFailKey(ip)); ok {
+		if count, ok := v.(int); ok {
+
+			return count
+		}
+	}
+
+	return 0
+}
+
+func recordLoginFail(ip string) {
+	cache.Set(loginFailKey(ip), loginFailCount(ip)+1, loginFailWindow)
 }
 
 type authLoginReq struct {
@@ -326,8 +351,16 @@ func (Auth) Login(ctx *gin.Context) {
 		return
 	}
 
+	ip := ctx.ClientIP()
+	if loginFailCount(ip) >= loginFailLimit {
+		base.Response(ctx, 400, "登录失败次数过多，请稍后再试")
+
+		return
+	}
+
 	var username = model.GetK(model.AdminUsername)
 	if req.Username != username {
+		recordLoginFail(ip)
 		base.Response(ctx, 400, "用户名或密码错误")
 
 		return
@@ -335,18 +368,21 @@ func (Auth) Login(ctx *gin.Context) {
 
 	var password = model.GetK(model.AdminPassword)
 	if bcrypt.CompareHashAndPassword([]byte(password), []byte(req.Password)) != nil {
+		recordLoginFail(ip)
 		base.Response(ctx, 400, "用户名或密码错误")
 
 		return
 	}
 
+	cache.Set(loginFailKey(ip), 0, time.Second)
+
 	rand, _ := utils.GenerateTradeId()
 
-	var token = utils.StrSha256(rand + ctx.ClientIP())
+	var token = utils.StrSha256(rand + ip)
 
 	cache.Set(conf.AdminTokenK, token, time.Hour*24)
 
-	model.SetK(model.AdminLoginIP, ctx.ClientIP())
+	model.SetK(model.AdminLoginIP, ip)
 	model.SetK(model.AdminLoginAt, cast.ToString(time.Now().Format(time.DateTime)))
 
 	base.Response(ctx, 200, gin.H{"token": token, "types": model.GetAllAlias()})

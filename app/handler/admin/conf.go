@@ -27,6 +27,11 @@ type confGetsReq struct {
 
 type confSetsReq []confReq
 
+func isSensitiveConfKey(key string) bool {
+
+	return key == string(model.AdminPassword) || key == string(model.AdminSecret)
+}
+
 type notifierConf struct {
 	Channel string          `json:"channel" binding:"required"`
 	Params  json.RawMessage `json:"params" binding:"required"`
@@ -54,6 +59,11 @@ func (Conf) Get(ctx *gin.Context) {
 
 		return
 	}
+	if isSensitiveConfKey(req.Key) {
+		base.BadRequest(ctx, "配置项不允许读取")
+
+		return
+	}
 
 	base.Ok(ctx, gin.H{"key": req.Key, "value": model.GetK(model.ConfKey(req.Key))})
 }
@@ -67,6 +77,7 @@ func (Conf) Del(ctx *gin.Context) {
 	}
 
 	model.Db.Where("k = ?", req.Key).Delete(&model.Conf{})
+	model.RefreshC()
 
 	base.Ok(ctx, "删除成功")
 }
@@ -79,8 +90,15 @@ func (Conf) Gets(ctx *gin.Context) {
 		return
 	}
 
+	keys := make([]string, 0, len(req.Keys))
+	for _, key := range req.Keys {
+		if !isSensitiveConfKey(key) {
+			keys = append(keys, key)
+		}
+	}
+
 	var items = make([]model.Conf, 0)
-	model.Db.Where("k IN ?", req.Keys).Find(&items)
+	model.Db.Where("k IN ?", keys).Find(&items)
 
 	var data = gin.H{}
 	for _, item := range items {

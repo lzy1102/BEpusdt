@@ -43,7 +43,9 @@ var notOrderQueue = chanx.NewUnboundedChan[[]transfer](context.Background(), 30)
 var transferQueue = chanx.NewUnboundedChan[[]transfer](context.Background(), 30) // 交易转账队列
 
 // lookbackDone 记录已触发过回溯的订单 ID，每个订单只回溯一次。
-var lookbackDone sync.Map // key: int64 order ID, value: struct{}
+var lookbackDone sync.Map // key: int64 order ID, value: time.Time
+
+const lookbackStateTTL = time.Hour * 72
 
 const batchInterval = time.Second * 1       // 批处理缓解数据库读取压力
 const orderCheckInterval = time.Second * 10 // 订单过期检查间隔
@@ -52,6 +54,26 @@ func init() {
 	Register(Task{Callback: orderTransferHandle})
 	Register(Task{Callback: notOrderTransferHandle})
 	Register(Task{Callback: tronResourceHandle})
+	Register(Task{Duration: time.Hour, Callback: cleanupLookbackState})
+}
+
+// cleanupLookbackState 定期清理长期保留的回溯去重记录，避免长期运行内存持续增长
+func cleanupLookbackState(context.Context) {
+	cutoff := time.Now().Add(-lookbackStateTTL)
+	lookbackDone.Range(func(k, v any) bool {
+		if at, ok := v.(time.Time); ok && at.Before(cutoff) {
+			lookbackDone.Delete(k)
+		}
+
+		return true
+	})
+	solanaReconciled.Range(func(k, v any) bool {
+		if at, ok := v.(time.Time); ok && at.Before(cutoff) {
+			solanaReconciled.Delete(k)
+		}
+
+		return true
+	})
 }
 
 func orderTransferHandle(ctx context.Context) {
@@ -139,6 +161,9 @@ func orderTransferHandle(ctx context.Context) {
 }
 
 func orderTransferMatch(o model.Order, t transfer) bool {
+	if o.Status != model.OrderStatusWaiting && o.Status != model.OrderStatusExpired {
+		return false
+	}
 	if o.TradeType != t.TradeType || orderMatchAddress(o) != t.RecvAddress {
 		return false
 	}
@@ -255,12 +280,18 @@ func tronResourceHandle(ctx context.Context) {
 }
 
 func markFinalConfirmed(o model.Order) {
-	o.SetSuccess()
+	if err := o.SetSuccess(); err != nil {
+		log.Task.Warn("订单成功标记跳过:", err)
+
+		return
+	}
+
 	notifyOrderSuccess(o)
 }
 
 func receivableOrderStatuses() []int {
-	return []int{model.OrderStatusWaiting, model.OrderStatusExpired, model.OrderStatusConfirming}
+	// 确认中的订单已经绑定交易哈希，不能再被后续转账重复匹配
+	return []int{model.OrderStatusWaiting, model.OrderStatusExpired}
 }
 
 func getReceivableOrders() map[string][]model.Order {
@@ -281,8 +312,10 @@ func getReceivableOrders() map[string][]model.Order {
 
 func hasLookbackOrders(tradeType []model.TradeType) bool {
 	var count int64
+	// 确认中的订单仍需要扫描器推进区块高度，用于确认数判断；只是不再参与金额匹配。
+	status := []int{model.OrderStatusWaiting, model.OrderStatusExpired, model.OrderStatusConfirming}
 	db := model.Db.Model(&model.Order{}).
-		Where("status in (?)", receivableOrderStatuses()).
+		Where("status in (?)", status).
 		Where("expired_at > ?", time.Now().Add(model.GetLookbackHour()))
 	if len(tradeType) > 0 {
 		db = db.Where("trade_type in (?)", tradeType)
@@ -291,15 +324,6 @@ func hasLookbackOrders(tradeType []model.TradeType) bool {
 	db.Count(&count)
 
 	return count > 0
-}
-
-func getLookbackUnix(network model.Network) (startAt, endAt int64, ok bool) {
-	startAt, endAt, orderIDs, ok := pendingLookbackUnix(network)
-	if ok {
-		markLookbackDone(orderIDs)
-	}
-
-	return startAt, endAt, ok
 }
 
 func pendingLookbackUnix(network model.Network) (startAt, endAt int64, orderIDs []int64, ok bool) {
@@ -353,8 +377,9 @@ func pendingLookbackUnix(network model.Network) (startAt, endAt int64, orderIDs 
 }
 
 func markLookbackDone(orderIDs []int64) {
+	now := time.Now()
 	for _, orderID := range orderIDs {
-		lookbackDone.Store(orderID, struct{}{})
+		lookbackDone.Store(orderID, now)
 	}
 }
 
@@ -364,7 +389,13 @@ func expireWaitingOrders() {
 			continue
 		}
 
-		t.SetExpired()
+		if err := t.SetExpired(); err != nil {
+			log.Task.Warn("订单过期标记失败:", err)
+
+			continue
+		}
+		// 过期后再做一次完整回溯，补偿订单有效期内可能因扫块故障漏掉的付款
+		lookbackDone.Delete(t.ID)
 		notify.Bepusdt(t)
 	}
 }
@@ -382,7 +413,11 @@ func getConfirmingOrders(tradeType []model.TradeType) []model.Order {
 	for _, order := range orders {
 		if time.Now().Unix() >= order.ExpiredAt.Unix() {
 			if order.ConfirmedAt == nil || order.ConfirmedAt.IsZero() || !order.ConfirmedAt.Before(order.ExpiredAt) {
-				order.SetFailed()
+				if err := order.SetFailed(); err != nil {
+					log.Task.Warn("订单失败标记跳过:", err)
+
+					continue
+				}
 				notify.Bepusdt(order)
 
 				continue

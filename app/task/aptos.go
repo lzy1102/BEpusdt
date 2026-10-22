@@ -28,6 +28,12 @@ type aptos struct {
 	lastVersion            int
 	versionQueue           *chanx.UnboundedChan[version]
 	client                 *http.Client
+	lookbackNext           int // 回溯游标，0 表示当前没有进行中的回溯
+	lookbackEnd            int
+	lookbackOrders         []int64 // 当前回溯覆盖的订单，完整入队后再标记完成
+	retryMu                sync.Mutex
+	retryAttempts          map[version]int
+	retryScheduled         map[version]struct{}
 }
 
 type version struct {
@@ -64,6 +70,8 @@ func newAptos() aptos {
 		lastVersion:            0,
 		versionQueue:           chanx.NewUnboundedChan[version](context.Background(), 30),
 		client:                 utils.NewHttpClient(),
+		retryAttempts:          make(map[version]int),
+		retryScheduled:         make(map[version]struct{}),
 	}
 }
 
@@ -108,6 +116,10 @@ func (a *aptos) syncVersionForward(ctx context.Context) {
 	}
 
 	var sub = now - a.lastVersion
+	if sub <= 0 {
+
+		return
+	}
 	if sub <= a.versionChunkSize {
 		a.versionQueue.In <- version{Start: a.lastVersion, Limit: sub}
 	} else {
@@ -134,13 +146,23 @@ func (a *aptos) lookbackVersion(ctx context.Context) {
 		return
 	}
 
-	startAt, endAt, ok := getLookbackUnix(conf.Aptos)
-	if !ok {
-		return
+	if a.lookbackNext == 0 {
+		startAt, endAt, orderIDs, ok := pendingLookbackUnix(conf.Aptos)
+		if !ok {
+			return
+		}
+
+		start, end := blockapi.New().GetBoundaryHeights(startAt, endAt, conf.Aptos)
+		if start <= 0 || end < start {
+			log.Task.Warn(fmt.Sprintf("Aptos 回溯版本范围无效: start=%d end=%d", start, end))
+
+			return
+		}
+
+		a.lookbackNext, a.lookbackEnd, a.lookbackOrders = int(start), int(end), orderIDs
 	}
 
-	start, end := blockapi.New().GetBoundaryHeights(startAt, endAt, conf.Aptos)
-	for i := int(start); i <= int(end); i += a.versionChunkSize {
+	for a.lookbackNext <= a.lookbackEnd {
 		select {
 		case <-ctx.Done():
 			return
@@ -149,13 +171,18 @@ func (a *aptos) lookbackVersion(ctx context.Context) {
 		if syncBreak(conf.Aptos, a.versionQueue.Len()) {
 			return
 		}
+
 		limit := a.versionChunkSize
-		if i+limit > int(end) {
-			limit = int(end) - i + 1
+		if a.lookbackNext+limit-1 > a.lookbackEnd {
+			limit = a.lookbackEnd - a.lookbackNext + 1
 		}
-		a.versionQueue.In <- version{Start: i, Limit: limit}
+		a.versionQueue.In <- version{Start: a.lookbackNext, Limit: limit}
+		a.lookbackNext += limit
 		time.Sleep(time.Millisecond * 200) // 速率控制
 	}
+
+	markLookbackDone(a.lookbackOrders)
+	a.lookbackNext, a.lookbackEnd, a.lookbackOrders = 0, 0, nil
 }
 
 func (a *aptos) versionDispatch(ctx context.Context) {
@@ -185,6 +212,53 @@ func (a *aptos) versionDispatch(ctx context.Context) {
 	}
 }
 
+const aptosVersionMaxRetries = 10
+
+func (a *aptos) scheduleVersionRetry(p version) {
+	a.retryMu.Lock()
+	if _, ok := a.retryScheduled[p]; ok {
+		a.retryMu.Unlock()
+
+		return
+	}
+
+	attempt := a.retryAttempts[p] + 1
+	if attempt > aptosVersionMaxRetries {
+		delete(a.retryAttempts, p)
+		a.retryMu.Unlock()
+		log.Task.Error(fmt.Sprintf("Aptos 版本区间 %d+%d 连续失败 %d 次，已放弃", p.Start, p.Limit, aptosVersionMaxRetries))
+
+		return
+	}
+	a.retryAttempts[p] = attempt
+	a.retryScheduled[p] = struct{}{}
+	a.retryMu.Unlock()
+
+	delays := [...]time.Duration{time.Second * 2, time.Second * 5, time.Second * 15, time.Second * 30}
+	delay := delays[len(delays)-1]
+	if attempt <= len(delays) {
+		delay = delays[attempt-1]
+	}
+
+	time.AfterFunc(delay, func() {
+		a.retryMu.Lock()
+		delete(a.retryScheduled, p)
+		_, retry := a.retryAttempts[p]
+		a.retryMu.Unlock()
+
+		if retry {
+			a.versionQueue.In <- p
+		}
+	})
+}
+
+func (a *aptos) resetVersionRetry(p version) {
+	a.retryMu.Lock()
+	defer a.retryMu.Unlock()
+
+	delete(a.retryAttempts, p)
+}
+
 // 由于 aptos 网络特性，交易数据中不会显示存在交易转账 from => to 的对应关系，
 // 所以目前此解析函数存在大量循环嵌套解析，逻辑较为复杂，希望未来有更好的方式进行解析 慢慢优化
 func (a *aptos) versionParse(n any) {
@@ -193,10 +267,10 @@ func (a *aptos) versionParse(n any) {
 	var net = conf.Aptos
 	var url = fmt.Sprintf("%sv1/transactions?start=%d&limit=%d", model.Endpoint(conf.Aptos), p.Start, p.Limit)
 
-	conf.RecordSuccess(net, cast.ToString(p.Start+p.Limit))
 	resp, err := a.client.Get(url)
 	if err != nil {
 		conf.RecordFailure(net)
+		a.scheduleVersionRetry(p)
 		log.Task.Warn("versionParse Error sending request:", err)
 
 		return
@@ -205,6 +279,7 @@ func (a *aptos) versionParse(n any) {
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		conf.RecordFailure(net)
+		a.scheduleVersionRetry(p)
 		log.Task.Warn("versionParse Error response status code:", resp.StatusCode)
 
 		return
@@ -213,7 +288,7 @@ func (a *aptos) versionParse(n any) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		conf.RecordFailure(net)
-		a.versionQueue.In <- p
+		a.scheduleVersionRetry(p)
 		log.Task.Warn("versionParse Error reading response body:", err)
 
 		return
@@ -221,11 +296,14 @@ func (a *aptos) versionParse(n any) {
 
 	if !gjson.ValidBytes(body) {
 		conf.RecordFailure(net)
-		a.versionQueue.In <- p
+		a.scheduleVersionRetry(p)
 		log.Task.Warn("versionParse Error: invalid JSON response body")
 
 		return
 	}
+
+	conf.RecordSuccess(net, cast.ToString(p.Start+p.Limit))
+	a.resetVersionRetry(p)
 
 	transfers := make([]transfer, 0)
 	for _, trans := range gjson.ParseBytes(body).Array() {
@@ -383,6 +461,10 @@ func (a *aptos) versionParse(n any) {
 
 func (a *aptos) padAddressLeadingZeros(addr string) string {
 	addr = strings.TrimPrefix(addr, "0x")
+	if len(addr) > 64 {
+		addr = addr[len(addr)-64:]
+	}
+
 	addr = strings.Repeat("0", 64-len(addr)) + addr
 
 	return "0x" + addr

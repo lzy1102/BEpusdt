@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	applog "github.com/v03413/bepusdt/app/log"
 	"github.com/v03413/bepusdt/app/model"
 )
 
@@ -56,12 +57,12 @@ func Start(ctx context.Context) {
 	for _, t := range tasks {
 		go func(t Task) {
 			if t.Duration <= 0 {
-				t.Callback(ctx)
+				safeCall(ctx, t)
 
 				return
 			}
 
-			t.Callback(ctx)
+			safeCall(ctx, t)
 
 			ticker := time.NewTicker(t.Duration)
 			defer ticker.Stop()
@@ -71,9 +72,20 @@ func Start(ctx context.Context) {
 				case <-ctx.Done():
 					return
 				case <-ticker.C:
-					t.Callback(ctx)
+					safeCall(ctx, t)
 				}
 			}
 		}(t)
 	}
+}
+
+// safeCall 隔离单个任务的 panic，避免 RPC 返回异常数据时直接打挂整个进程
+func safeCall(ctx context.Context, t Task) {
+	defer func() {
+		if r := recover(); r != nil {
+			applog.Task.Error("task panic: ", r)
+		}
+	}()
+
+	t.Callback(ctx)
 }

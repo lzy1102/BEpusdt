@@ -27,6 +27,7 @@ type OrderParams struct {
 	CurrencyLimit     string          `json:"currency_limit"`     // 限定币种
 	AddressLocked     bool            `json:"address_locked"`     // 地址独占锁定
 	ClientFingerprint string          `json:"client_fingerprint"` //  客户端指纹
+	ExcludeOrderID    int64           `json:"-"`                  // 重建订单时排除自身占用的地址/金额
 }
 
 type Addr struct {
@@ -109,7 +110,7 @@ func BuildOrder(p OrderParams, trade Trade) (Order, error) {
 		Money:         p.Money.String(),
 		Address:       trade.Wallet.GetPaymentAddr(),
 		MatchAddress:  trade.Wallet.GetMatchAddr(),
-		AddressLocked: p.Money.IsZero(), // 零值订单，地址锁定 独占
+		AddressLocked: p.AddressLocked || p.Money.IsZero(), // 零值订单或显式指定时，地址锁定独占
 		Status:        OrderStatusWaiting,
 		Name:          p.Name,
 		ApiType:       p.ApiType,
@@ -185,6 +186,7 @@ func RebuildOrder(t Order, p OrderParams) (Order, error) {
 		return t, nil
 	}
 
+	p.ExcludeOrderID = t.ID
 	data, err := BuildTrade(p)
 	if err != nil {
 		return t, err

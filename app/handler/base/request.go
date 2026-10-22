@@ -3,7 +3,7 @@ package base
 // ListRequest 通用列表请求
 type ListRequest struct {
 	Page    int    `json:"page" form:"page" binding:"min=1"`
-	Size    int    `json:"size" form:"size" binding:"min=1"`
+	Size    int    `json:"size" form:"size" binding:"min=1,max=500"`
 	Keyword string `json:"keyword" form:"keyword"`
 	Sort    string `json:"sort" form:"sort" binding:"oneof=asc desc"`
 	ID      int    `json:"id" form:"id"`

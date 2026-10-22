@@ -209,10 +209,37 @@ func StrSha256(str string) string {
 	return fmt.Sprintf("%x", hash.Sum(nil))
 }
 
+// AppendQuery 在 URL 后追加查询参数，兼容已有查询参数和 #fragment
+func AppendQuery(raw, params string) string {
+	if params == "" {
+
+		return raw
+	}
+
+	var fragment string
+	if i := strings.IndexByte(raw, '#'); i >= 0 {
+		raw, fragment = raw[:i], raw[i:]
+	}
+
+	separator := "?"
+	if strings.Contains(raw, "?") {
+		separator = "&"
+	}
+	if strings.HasSuffix(raw, "?") || strings.HasSuffix(raw, "&") {
+		separator = ""
+	}
+
+	return raw + separator + params + fragment
+}
+
 func IsAllowedCallbackURL(raw string) bool {
 	// IsAllowedCallbackURL 校验回调/跳转地址格式是否合法
-	// 规则：必须是合法 URL，且 scheme 只允许 http 或 https
+	// 规则：必须是合法 URL，且 scheme 只允许 http 或 https；同时拒绝未转义的 HTML 敏感字符，
+	// 避免地址被收银台等页面拼接到 HTML 属性时造成注入。
 	if raw == "" {
+		return false
+	}
+	if strings.ContainsAny(raw, "\"<>") {
 		return false
 	}
 	u, err := url.ParseRequestURI(raw)

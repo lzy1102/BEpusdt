@@ -125,10 +125,7 @@ func (Epusdt) CreateOrder(ctx *gin.Context) {
 	}
 
 	// 解析请求地址
-	host := "http://" + ctx.Request.Host
-	if ctx.Request.TLS != nil {
-		host = "https://" + ctx.Request.Host
-	}
+	host := utils.GetRequestHost(ctx.Request)
 
 	if req.Fiat == "" {
 		req.Fiat = model.CNY
@@ -177,10 +174,7 @@ func (Epusdt) UpdateOrder(ctx *gin.Context) {
 	}
 
 	// 解析请求地址
-	host := "http://" + ctx.Request.Host
-	if ctx.Request.TLS != nil {
-		host = "https://" + ctx.Request.Host
-	}
+	host := utils.GetRequestHost(ctx.Request)
 
 	order, ok := loadPayOrder(ctx, req.TradeID)
 	if !ok {
@@ -214,6 +208,16 @@ func (Epusdt) UpdateOrder(ctx *gin.Context) {
 		return
 	}
 
+	crypto, err := model.GetCrypto(tradeType)
+	if err != nil {
+		ctx.JSON(200, respFailJson(fmt.Sprintf("UpdateOrder: unsupported payment method: %s - %s", req.Currency, req.Network)))
+		return
+	}
+	if !order.IsCurrencyAllowed(crypto) {
+		ctx.JSON(200, respFailJson("UpdateOrder: payment method is not allowed for this order"))
+		return
+	}
+
 	// 重建订单（更新支付方式）
 	// 注意：RebuildOrder 需要 OrderParams，我们需要从现有订单构造参数
 	money, _ := decimal.NewFromString(order.Money)
@@ -226,6 +230,7 @@ func (Epusdt) UpdateOrder(ctx *gin.Context) {
 		Name:              order.Name,
 		Timeout:           int64(math.Ceil(remaining.Seconds())),
 		Fiat:              order.Fiat,
+		AddressLocked:     order.AddressLocked,
 		ClientFingerprint: fp,
 	}
 

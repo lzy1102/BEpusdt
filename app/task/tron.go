@@ -41,6 +41,9 @@ type tron struct {
 	retryMu              sync.Mutex
 	retryAttempts        map[int]int
 	retryScheduled       map[int]*time.Timer
+	lookbackNext         int // 回溯游标，0 表示当前没有进行中的回溯
+	lookbackEnd          int
+	lookbackOrders       []int64 // 当前回溯覆盖的订单，完整入队后再标记完成
 }
 
 var tr tron
@@ -115,13 +118,23 @@ func (t *tron) lookbackBlocks(ctx context.Context) {
 		return
 	}
 
-	startAt, endAt, ok := getLookbackUnix(conf.Tron)
-	if !ok {
-		return
+	if t.lookbackNext == 0 {
+		startAt, endAt, orderIDs, ok := pendingLookbackUnix(conf.Tron)
+		if !ok {
+			return
+		}
+
+		start, end := blockapi.New().GetBoundaryHeights(startAt, endAt, conf.Tron)
+		if start <= 0 || end < start {
+			log.Task.Warn(fmt.Sprintf("Tron 回溯高度范围无效: start=%d end=%d", start, end))
+
+			return
+		}
+
+		t.lookbackNext, t.lookbackEnd, t.lookbackOrders = int(start), int(end), orderIDs
 	}
 
-	start, end := blockapi.New().GetBoundaryHeights(startAt, endAt, conf.Tron)
-	for i := int(start); i <= int(end); i++ {
+	for t.lookbackNext <= t.lookbackEnd {
 		select {
 		case <-ctx.Done():
 			return
@@ -130,9 +143,13 @@ func (t *tron) lookbackBlocks(ctx context.Context) {
 		if t.syncBreak() {
 			return
 		}
-		t.blockScanQueue.In <- i
+		t.blockScanQueue.In <- t.lookbackNext
+		t.lookbackNext++
 		time.Sleep(time.Millisecond * 250) // 速率控制
 	}
+
+	markLookbackDone(t.lookbackOrders)
+	t.lookbackNext, t.lookbackEnd, t.lookbackOrders = 0, 0, nil
 }
 
 func (t *tron) blockDispatch(ctx context.Context) {
@@ -432,7 +449,8 @@ func (t *tron) tradeConfirmHandle(ctx context.Context) {
 				return
 			}
 
-			if trans.GetRet()[0].ContractRet == core.Transaction_Result_SUCCESS {
+			ret := trans.GetRet()
+			if len(ret) > 0 && ret[0].ContractRet == core.Transaction_Result_SUCCESS {
 				markFinalConfirmed(o)
 			}
 

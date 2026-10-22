@@ -56,7 +56,7 @@ func (s *solana) reconcileExpiredOrders(ctx context.Context) {
 			continue
 		}
 
-		solanaReconciled.Store(o.ID, struct{}{})
+		solanaReconciled.Store(o.ID, time.Now())
 	}
 }
 

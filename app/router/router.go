@@ -19,6 +19,8 @@ var engine *gin.Engine
 var authRoute = make(map[string]bool)
 var secureRoute = make(map[string]struct{})
 
+const maxRequestBodyBytes = 1 << 20
+
 func Handler() *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 
@@ -33,12 +35,13 @@ func Handler() *gin.Engine {
 
 	engine.Use(sessions.Sessions("session", session))
 	engine.Use(gin.LoggerWithWriter(log.GetWriter()), gin.Recovery())
-	engine.Use(sessionAuth(), copyright())
+	engine.Use(bodyLimit(), sessionAuth(), copyright())
 	engine.NoRoute(noRoute())
 	engine.GET("/", func(ctx *gin.Context) {
 		if !model.IsInstalled() {
 			model.InstallLock()
-			ctx.HTML(200, "installed.html", model.GetInstallInfo())
+			// 初始化凭据只输出到启动日志，避免公网首次访问者直接获取后台账号和 API 令牌
+			ctx.HTML(200, "installed.html", gin.H{})
 
 			return
 		}
@@ -66,6 +69,16 @@ func Handler() *gin.Engine {
 	}
 
 	return engine
+}
+
+func bodyLimit() gin.HandlerFunc {
+	return func(ctx *gin.Context) {
+		if ctx.Request.Body != nil {
+			ctx.Request.Body = http.MaxBytesReader(ctx.Writer, ctx.Request.Body, maxRequestBodyBytes)
+		}
+
+		ctx.Next()
+	}
 }
 
 func sessionAuth() gin.HandlerFunc {

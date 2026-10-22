@@ -45,6 +45,27 @@
         return def != null ? def : key;
     }
 
+    function escapeHtml(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function safeReturnUrl(value, fallback) {
+        var raw = String(value == null ? '' : value).trim();
+        if (!raw) return fallback || '';
+        try {
+            var url = new URL(raw, window.location.origin);
+            if (url.protocol !== 'http:' && url.protocol !== 'https:') return fallback || '';
+            return url.href;
+        } catch (e) {
+            return fallback || '';
+        }
+    }
+
     function applyI18n() {
         if (!i18nReady || typeof i18next === 'undefined') return;
         document.querySelectorAll('[data-i18n]').forEach(function (el) {
@@ -421,7 +442,7 @@
                 disp.textContent = u.length > 40 ? u.slice(0, 20) + '...' + u.slice(-16) : u;
             }
         }
-        var ret = data.redirect_url || (cfg && cfg.return_url) || '';
+        var ret = safeReturnUrl(data.redirect_url || (cfg && cfg.return_url), '');
         var btn = document.getElementById('returnBtn');
         if (btn) {
             if (ret) btn.href = ret;
@@ -436,7 +457,7 @@
         hideCheckoutStages();
         var modal = document.getElementById('canceledModal');
         if (!modal) {
-            var ret = (data && data.redirect_url) || (cfg && cfg.return_url) || '/';
+            var ret = escapeHtml(safeReturnUrl((data && data.redirect_url) || (cfg && cfg.return_url), '/'));
             modal = document.createElement('div');
             modal.id = 'canceledModal';
             modal.className = 'modal-overlay';
@@ -461,7 +482,7 @@
 
     function showTimeout() {
         if (document.getElementById('timeoutModal')) return;
-        var ret = cfg.return_url || '/';
+        var ret = escapeHtml(safeReturnUrl(cfg.return_url, '/'));
         var ov = document.createElement('div');
         ov.id = 'timeoutModal';
         ov.className = 'modal-overlay';
@@ -560,6 +581,7 @@
         applyI18n: applyI18n,
         t: t,
         showCanceled: showCanceled,
+        safeReturnUrl: safeReturnUrl,
         switchLang: switchLang
     };
 })();
@@ -700,8 +722,11 @@
     function bindHelp(id, url) {
         var el = document.getElementById(id);
         if (!el) return;
-        if (url) {
-            el.href = url;
+        var safeUrl = window.Payment && window.Payment.safeReturnUrl
+            ? window.Payment.safeReturnUrl(url, '')
+            : '';
+        if (safeUrl) {
+            el.href = safeUrl;
             el.removeAttribute('aria-disabled');
             el.style.pointerEvents = '';
             el.style.opacity = '';

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -58,8 +57,8 @@ func Handle(order model.Order) error {
 }
 
 func epay(ctx context.Context, order model.Order) error {
-	var client = http.Client{Timeout: time.Second * 5}
-	var notifyUrl = fmt.Sprintf("%s?%s", order.NotifyUrl, order.BuildNotifyParams())
+	var client = utils.NewCallbackClient()
+	var notifyUrl = utils.AppendQuery(order.NotifyUrl, order.BuildNotifyParams())
 
 	postReq, err2 := http.NewRequestWithContext(ctx, "GET", notifyUrl, nil)
 	if err2 != nil {
@@ -79,9 +78,9 @@ func epay(ctx context.Context, order model.Order) error {
 		return fmt.Errorf("商户系统返回状态码错误：%d（必须是200）", resp.StatusCode)
 	}
 
-	all, err := io.ReadAll(resp.Body)
+	all, err := utils.ReadCallbackBody(resp.Body)
 	if err != nil {
-		markNotifyFail(order, fmt.Sprintf("io.ReadAll(resp.Body) Error: %v", err))
+		markNotifyFail(order, fmt.Sprintf("utils.ReadCallbackBody Error: %v", err))
 
 		return err
 	}
@@ -127,7 +126,7 @@ func epusdt(ctx context.Context, order model.Order) error {
 
 	// 再次序列化
 	jsonBody, err = json.Marshal(body)
-	var client = http.Client{Timeout: time.Second * 5}
+	var client = utils.NewCallbackClient()
 	var postReq, err2 = http.NewRequestWithContext(ctx, "POST", order.NotifyUrl, strings.NewReader(string(jsonBody)))
 	if err2 != nil {
 		markNotifyFail(order, err2.Error())
@@ -167,7 +166,7 @@ func Bepusdt(o model.Order) {
 	}
 
 	var authToken = model.AuthToken()
-	var client = &http.Client{Timeout: time.Second * 5}
+	var client = utils.NewCallbackClient()
 	go func() {
 		if err := deliverBepusdtStatusUpdate(model.Db, client, authToken, o); err != nil {
 			log.Warn("notify BEpusdt Error:", err.Error())
@@ -177,7 +176,7 @@ func Bepusdt(o model.Order) {
 
 func deliverBepusdtStatusUpdate(db *gorm.DB, client *http.Client, authToken string, o model.Order) error {
 	if client == nil {
-		client = &http.Client{Timeout: time.Second * 5}
+		client = utils.NewCallbackClient()
 	}
 
 	var current model.Order
@@ -235,7 +234,7 @@ func deliverBepusdtStatusUpdate(db *gorm.DB, client *http.Client, authToken stri
 		return fmt.Errorf("resp.StatusCode != 200")
 	}
 
-	all, _ := io.ReadAll(resp.Body)
+	all, _ := utils.ReadCallbackBody(resp.Body)
 	log.Info(fmt.Sprintf("订单回调成功[%d]：%s %s", current.Status, current.TradeId, string(all)))
 
 	return nil

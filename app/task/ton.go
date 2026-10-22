@@ -40,7 +40,7 @@ type tonShardKey struct {
 type ton struct {
 	lastBlockSeqno uint32
 	blockScanQueue *chanx.UnboundedChan[uint32]
-	clientOnce     sync.Once
+	clientMu       sync.Mutex
 	api            tgo.APIClientWrapped
 }
 
@@ -70,9 +70,16 @@ func (t *ton) syncMBSeqnoForward(ctx context.Context) {
 			continue
 		}
 
+		client, err := t.client()
+		if err != nil {
+			log.Task.Warn(fmt.Sprintf("ton client init: %v", err))
+			time.Sleep(time.Second)
+			continue
+		}
+
 		// 初始化：首次获取当前最新高度作为起点
 		if t.lastBlockSeqno == 0 {
-			mb, err := t.client().CurrentMasterchainInfo(ctx)
+			mb, err := client.CurrentMasterchainInfo(ctx)
 			if err != nil {
 				log.Task.Warn(fmt.Sprintf("get current masterchain info: %v", err))
 				time.Sleep(time.Second)
@@ -85,7 +92,7 @@ func (t *ton) syncMBSeqnoForward(ctx context.Context) {
 		nextSeqno := t.lastBlockSeqno + 1
 
 		// 阻塞直到 nextSeqno 在节点上可用，无需轮询
-		mb, err := t.client().WaitForBlock(nextSeqno).GetMasterchainInfo(ctx)
+		mb, err := client.WaitForBlock(nextSeqno).GetMasterchainInfo(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -139,14 +146,19 @@ func (t *ton) blockParse(parent context.Context, seqno uint32) error {
 	var ctx, cancel = context.WithTimeout(parent, time.Second*60)
 	defer cancel()
 
-	mb, err := t.client().LookupBlock(ctx, tonMasterChainID, tonMasterShard, seqno)
+	client, err := t.client()
+	if err != nil {
+		return fmt.Errorf("ton client init: %w", err)
+	}
+
+	mb, err := client.LookupBlock(ctx, tonMasterChainID, tonMasterShard, seqno)
 	if err != nil {
 		conf.RecordFailure(conf.Ton)
 
 		return fmt.Errorf("lookup master block: %w", err)
 	}
 
-	shardsTip, err := t.client().GetBlockShardsInfo(ctx, mb)
+	shardsTip, err := client.GetBlockShardsInfo(ctx, mb)
 	if err != nil {
 		conf.RecordFailure(conf.Ton)
 
@@ -155,14 +167,14 @@ func (t *ton) blockParse(parent context.Context, seqno uint32) error {
 
 	var previousShards []*tgo.BlockIDExt
 	if seqno > 0 {
-		previousMB, lookupErr := t.client().LookupBlock(ctx, tonMasterChainID, tonMasterShard, seqno-1)
+		previousMB, lookupErr := client.LookupBlock(ctx, tonMasterChainID, tonMasterShard, seqno-1)
 		if lookupErr != nil {
 			conf.RecordFailure(conf.Ton)
 
 			return fmt.Errorf("lookup previous master block: %w", lookupErr)
 		}
 
-		previousShards, err = t.client().GetBlockShardsInfo(ctx, previousMB)
+		previousShards, err = client.GetBlockShardsInfo(ctx, previousMB)
 		if err != nil {
 			conf.RecordFailure(conf.Ton)
 
@@ -172,7 +184,7 @@ func (t *ton) blockParse(parent context.Context, seqno uint32) error {
 
 	for _, shardRange := range tonShardRanges(previousShards, shardsTip) {
 		for s := shardRange.Start; s <= shardRange.End; s++ {
-			shardBlock, err := t.client().LookupBlock(ctx, shardRange.Workchain, shardRange.Shard, s)
+			shardBlock, err := client.LookupBlock(ctx, shardRange.Workchain, shardRange.Shard, s)
 			if err != nil {
 				conf.RecordFailure(conf.Ton)
 
@@ -279,7 +291,12 @@ func (t *ton) syncBreak() bool {
 }
 
 func (t *ton) processShard(ctx context.Context, shard *tgo.BlockIDExt, seqno uint32) error {
-	data, err := t.client().GetBlockData(ctx, shard)
+	client, err := t.client()
+	if err != nil {
+		return err
+	}
+
+	data, err := client.GetBlockData(ctx, shard)
 	if err != nil {
 		return err
 	}
@@ -416,12 +433,23 @@ func (t *ton) tradeConfirmHandle(context.Context) {
 	wg.Wait()
 }
 
-func (t *ton) client() tgo.APIClientWrapped {
-	t.clientOnce.Do(func() {
-		t.api = utils.NewTonClient(model.GetC(model.RpcGlobalConfigUrlTon))
-	})
+func (t *ton) client() (tgo.APIClientWrapped, error) {
+	t.clientMu.Lock()
+	defer t.clientMu.Unlock()
 
-	return t.api
+	if t.api != nil {
+
+		return t.api, nil
+	}
+
+	api, err := utils.NewTonClient(model.GetC(model.RpcGlobalConfigUrlTon))
+	if err != nil {
+
+		return nil, err
+	}
+	t.api = api
+
+	return t.api, nil
 }
 
 func (t *ton) lookbackBlocks(ctx context.Context) {

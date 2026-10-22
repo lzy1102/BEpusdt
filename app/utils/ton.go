@@ -21,13 +21,17 @@ func IsValidTonAddress(value string) bool {
 	return err == nil
 }
 
-func NewTonClient(configUrl string) tgo.APIClientWrapped {
+func NewTonClient(configUrl string) (tgo.APIClientWrapped, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
+	defer cancel()
+
 	pool := liteclient.NewConnectionPool()
-	if err := pool.AddConnectionsFromConfigUrl(context.Background(), configUrl); err != nil {
-		panic(err)
+	if err := pool.AddConnectionsFromConfigUrl(ctx, configUrl); err != nil {
+
+		return nil, err
 	}
 
-	return tgo.NewAPIClient(pool).WithRetryTimeout(3, time.Second*5)
+	return tgo.NewAPIClient(pool).WithRetryTimeout(3, time.Second*5), nil
 }
 
 func GetJettonWalletAddr(api tgo.APIClientWrapped, master *address.Address, owner *address.Address) (*address.Address, error) {

@@ -63,7 +63,11 @@ func (wa *Wallet) Validate() error {
 		if err != nil {
 			return err
 		}
-		addr, err := utils.GetJettonWalletAddr(utils.NewTonClient(GetC(RpcGlobalConfigUrlTon)), address.MustParseAddr(conf.UsdtTon), owner)
+		client, err := utils.NewTonClient(GetC(RpcGlobalConfigUrlTon))
+		if err != nil {
+			return err
+		}
+		addr, err := utils.GetJettonWalletAddr(client, address.MustParseAddr(conf.UsdtTon), owner)
 		if err != nil {
 			return err
 		}

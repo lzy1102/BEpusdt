@@ -70,8 +70,7 @@ service.interceptors.response.use(
       return Promise.reject(res);
     }
     if (res.code != 200) {
-      Message.error(res.message);
-
+      Message.error(res.msg || res.message || "请求失败");
       return Promise.reject(res);
     }
 

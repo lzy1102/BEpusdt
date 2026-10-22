@@ -56,7 +56,14 @@ func start(ctx context.Context, cmd *cli.Command) error {
 
 	// 启动 Web 服务器
 	var listen = cmd.String("listen")
-	var srv = &http.Server{Addr: listen, Handler: router.Handler()}
+	var srv = &http.Server{
+		Addr:              listen,
+		Handler:           router.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
 
 	log.Info("web server Start listen", listen)
 

@@ -272,7 +272,13 @@ func (s *solana) parseTransaction(trans gjson.Result, slot int, timestamp time.T
 				continue
 			}
 
-			tokenAccountMap[accountKeys[itm.Get("accountIndex").Int()]] = solanaTokenOwner{
+			key, ok := solanaAccountKey(accountKeys, itm.Get("accountIndex").Int())
+			if !ok {
+
+				continue
+			}
+
+			tokenAccountMap[key] = solanaTokenOwner{
 				TradeType: tradeType,
 				Address:   itm.Get("owner").String(),
 			}
@@ -433,6 +439,15 @@ func solanaRetryDelay(attempt int) time.Duration {
 	return delays[attempt-1]
 }
 
+func solanaAccountKey(accountKeys []string, index int64) (string, bool) {
+	if index < 0 || index >= int64(len(accountKeys)) {
+
+		return "", false
+	}
+
+	return accountKeys[index], true
+}
+
 func (s *solana) parseTransfer(instr gjson.Result, accountKeys []string, tokenAccountMap map[string]solanaTokenOwner) transfer {
 	accounts := instr.Get("accounts").Array()
 	trans := transfer{}
@@ -460,17 +475,34 @@ func (s *solana) parseTransfer(instr gjson.Result, accountKeys []string, tokenAc
 		exp = int32(data[9]) * -1
 	}
 
-	from, ok := tokenAccountMap[accountKeys[accounts[0].Int()]]
+	fromKey, ok := solanaAccountKey(accountKeys, accounts[0].Int())
+	if !ok {
+
+		return trans
+	}
+	from, ok := tokenAccountMap[fromKey]
+	if !ok {
+
+		return trans
+	}
+
+	recvIndex := accounts[1].Int()
+	if isTransferChecked {
+		recvIndex = accounts[2].Int()
+	}
+	recvKey, ok := solanaAccountKey(accountKeys, recvIndex)
+	if !ok {
+
+		return trans
+	}
+	recv, ok := tokenAccountMap[recvKey]
 	if !ok {
 
 		return trans
 	}
 
 	trans.FromAddress = from.Address
-	trans.RecvAddress = tokenAccountMap[accountKeys[accounts[1].Int()]].Address
-	if isTransferChecked {
-		trans.RecvAddress = tokenAccountMap[accountKeys[accounts[2].Int()]].Address
-	}
+	trans.RecvAddress = recv.Address
 
 	buf := make([]byte, 8)
 	copy(buf[:], data[1:9])

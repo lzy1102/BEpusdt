@@ -7,10 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"github.com/spf13/cast"
 	"github.com/v03413/bepusdt/app/utils"
-	"github.com/v03413/go-cache"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
@@ -76,12 +74,15 @@ func SetK(k ConfKey, v string) {
 			return err2
 		}
 
-		defer RefreshC()
-
 		return nil
 	}); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, fmt.Sprintf("设置配置项 %s 错误：%s", k, err.Error()))
+
+		return
 	}
+
+	// 事务提交后再刷新缓存，避免读取到提交前的旧值
+	RefreshC()
 }
 
 func GetK(k ConfKey) string {
@@ -128,11 +129,26 @@ func GetC(k ConfKey) string {
 
 func RefreshC() {
 	var rows = make([]Conf, 0)
-	Db.Find(&rows)
+	if err := Db.Find(&rows).Error; err != nil {
+		return
+	}
 
+	keys := make(map[ConfKey]struct{}, len(rows))
 	for _, row := range rows {
 		confCache.Store(row.K, row.V)
+		keys[row.K] = struct{}{}
 	}
+
+	// 删除已从数据库移除的配置，避免旧值一直留在内存缓存中
+	confCache.Range(func(k, _ any) bool {
+		if key, ok := k.(ConfKey); ok {
+			if _, exists := keys[key]; !exists {
+				confCache.Delete(key)
+			}
+		}
+
+		return true
+	})
 }
 
 func CheckoutUrl(host, id string) string {
@@ -193,14 +209,6 @@ func ConfInit() {
 	fmt.Println()
 
 	Db.Create(&rows)
-
-	// 数据丢到缓存，前台首次访问时会展示这部分初始化信息；明文密码只这一次保存到缓存，不写入数据库
-	cache.Set(string(SystemInstallLock), gin.H{
-		"username": username,
-		"password": password,
-		"secure":   secure,
-		"token":    token,
-	}, -1)
 }
 
 func AuthToken() string {
@@ -214,15 +222,6 @@ func IsInstalled() bool {
 
 func InstallLock() {
 	SetK(SystemInstallLock, "1")
-}
-
-func GetInstallInfo() gin.H {
-	if info, ok := cache.Get(string(SystemInstallLock)); ok {
-
-		return info.(gin.H)
-	}
-
-	return gin.H{}
 }
 
 func GetTronGridApiKeys() []string {
