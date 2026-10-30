@@ -1,5 +1,10 @@
 package conf
 
+import (
+	"os"
+	"strings"
+)
+
 const (
 	Desc   = "一款更好用的个人加密货币收款网关"
 	Github = "https://github.com/v03413/BEpusdt"
@@ -9,8 +14,16 @@ const Debug = false
 
 const (
 	Pid = "1000" // 暂时固定易支付商户ID
-	Api = "https://api.bepusdt.online"
 )
+
+// Api 区块回溯辅助接口，可通过环境变量 BEPUSDT_API 指向自建服务
+var Api = func() string {
+	if v := strings.TrimSpace(os.Getenv("BEPUSDT_API")); v != "" {
+		return v
+	}
+
+	return "https://api.bepusdt.online"
+}()
 
 const (
 	Ton      = "ton" // The Open Network
