@@ -6,11 +6,85 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 )
 
 // MaxCallbackResponseBytes 商户回调响应体上限，避免恶意回调地址返回超大响应耗尽内存
 const MaxCallbackResponseBytes int64 = 64 << 10
+
+var (
+	callbackAllowMu   sync.RWMutex
+	callbackAllowNets []*net.IPNet
+)
+
+// SetCallbackPrivateAllowlist 设置允许回调的私网地址白名单。
+// 支持 IPv4/IPv6 单个地址与 CIDR，使用逗号、分号、空格或换行分隔。
+// 空字符串表示不放开任何私网地址；出于安全考虑，/0 网段会被忽略。
+func SetCallbackPrivateAllowlist(raw string) {
+	nets := make([]*net.IPNet, 0)
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		switch r {
+		case ',', ';', ' ', '\t', '\r', '\n':
+
+			return true
+		}
+
+		return false
+	})
+
+	for _, part := range parts {
+		item := strings.TrimSpace(part)
+		if item == "" {
+
+			continue
+		}
+
+		if !strings.Contains(item, "/") {
+			ip := net.ParseIP(item)
+			if ip == nil {
+
+				continue
+			}
+			if ip.To4() != nil {
+				item += "/32"
+			} else {
+				item += "/128"
+			}
+		}
+
+		_, network, err := net.ParseCIDR(item)
+		if err != nil {
+
+			continue
+		}
+		ones, _ := network.Mask.Size()
+		if ones == 0 { // 拒绝 0.0.0.0/0、::/0 之类的全网放行
+			continue
+		}
+
+		nets = append(nets, network)
+	}
+
+	callbackAllowMu.Lock()
+	callbackAllowNets = nets
+	callbackAllowMu.Unlock()
+}
+
+func privateAllowed(ip net.IP) bool {
+	callbackAllowMu.RLock()
+	defer callbackAllowMu.RUnlock()
+
+	for _, network := range callbackAllowNets {
+		if network.Contains(ip) {
+
+			return true
+		}
+	}
+
+	return false
+}
 
 // NewCallbackClient 创建用于访问商户回调地址的 HTTP 客户端。
 // 回调地址由商户提供，必须限制内网地址并禁止无限重定向，防止 SSRF。
@@ -58,7 +132,7 @@ func safeDialContext(ctx context.Context, network, addr string) (net.Conn, error
 
 	var lastErr error
 	for _, ipAddr := range ips {
-		if !isPublicIP(ipAddr.IP) {
+		if !isPublicIP(ipAddr.IP) && !privateAllowed(ipAddr.IP) {
 			lastErr = errors.New("blocked non-public callback address")
 
 			continue

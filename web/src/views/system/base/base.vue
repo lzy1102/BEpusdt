@@ -100,6 +100,7 @@ const getConf = async () => {
         "admin_login_at",
         "admin_login_ip",
         "notify_max_retry",
+        "notify_private_allow",
         "payment_max_amount",
         "payment_min_amount",
         "payment_support_url",

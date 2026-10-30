@@ -38,6 +38,7 @@ var defaultConf = map[ConfKey]string{
 	RpcEndpointPlasma:       "https://rpc.plasma.to/",
 	RpcGlobalConfigUrlTon:   "https://ton.org/global-config.json",
 	NotifyMaxRetry:          "10",
+	NotifyPrivateAllow:      "",
 	BlockHeightMaxDiff:      "1000",
 	BlockOffsetConfirm:      "0",
 	PaymentTimeout:          "1200",     // 20分钟
@@ -149,6 +150,9 @@ func RefreshC() {
 
 		return true
 	})
+
+	// 同步回调私网白名单，供回调客户端在拨号时校验
+	utils.SetCallbackPrivateAllowlist(GetC(NotifyPrivateAllow))
 }
 
 func CheckoutUrl(host, id string) string {

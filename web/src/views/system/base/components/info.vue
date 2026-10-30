@@ -31,6 +31,19 @@
           </a-form-item>
 
           <a-form-item
+            field="notify_private_allow"
+            label="回调私网白名单"
+            extra="默认拒绝所有内网回调地址（防 SSRF）。如需回调内网系统，请填写允许的 IP 或 CIDR，逗号或换行分隔，例如 192.168.3.112 或 192.168.3.0/24；留空表示全部禁止。"
+          >
+            <a-textarea
+              v-model="form.notify_private_allow"
+              placeholder="192.168.3.112&#10;192.168.3.0/24"
+              :auto-size="{ minRows: 2, maxRows: 8 }"
+              allow-clear
+            />
+          </a-form-item>
+
+          <a-form-item
             field="payment_min_amount"
             label="单笔最小金额"
             extra="单笔支付允许的最小金额，单位为创建交易时传入的法币，用于一定风险控制"
@@ -114,6 +127,7 @@ const form = ref({
   block_height_max_diff: "",
   block_offset_confirm: "0",
   notify_max_retry: "",
+  notify_private_allow: "",
   payment_max_amount: "",
   payment_min_amount: "",
   payment_match_mode: "classic",
@@ -200,6 +214,7 @@ const onSubmit = async ({ errors }: ArcoDesign.ArcoSubmit) => {
     { key: "block_height_max_diff", value: form.value.block_height_max_diff },
     { key: "block_offset_confirm", value: form.value.block_offset_confirm },
     { key: "notify_max_retry", value: form.value.notify_max_retry },
+    { key: "notify_private_allow", value: form.value.notify_private_allow },
     { key: "payment_max_amount", value: form.value.payment_max_amount },
     { key: "payment_min_amount", value: form.value.payment_min_amount },
     { key: "payment_timeout", value: form.value.payment_timeout },
@@ -219,6 +234,7 @@ watch(
     form.value.block_height_max_diff = data.value.block_height_max_diff;
     form.value.block_offset_confirm = data.value.block_offset_confirm || "0";
     form.value.notify_max_retry = data.value.notify_max_retry;
+    form.value.notify_private_allow = data.value.notify_private_allow || "";
     form.value.payment_max_amount = data.value.payment_max_amount;
     form.value.payment_min_amount = data.value.payment_min_amount;
     form.value.payment_timeout = data.value.payment_timeout;

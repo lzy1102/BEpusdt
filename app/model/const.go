@@ -74,6 +74,7 @@ const (
 	RateSyncHistoryDays     ConfKey = "rate_sync_history_days"      // 历史汇率保存天数
 
 	NotifyMaxRetry     ConfKey = "notify_max_retry"      // 最大重试次数，订单回调失败
+	NotifyPrivateAllow ConfKey = "notify_private_allow"  // 允许回调的私网地址白名单，支持 IP/CIDR，逗号或换行分隔
 	BlockHeightMaxDiff ConfKey = "block_height_max_diff" // 区块高度最大差值，超过此值则以当前区块高度为准，重新开始扫描
 	BlockOffsetConfirm ConfKey = "block_offset_confirm"  // 区块偏移确认数，扫描时以当前区块高度减去此偏移量为准，避免重链导致的订单回调失败
 

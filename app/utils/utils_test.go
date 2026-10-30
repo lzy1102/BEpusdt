@@ -53,6 +53,32 @@ func TestSafeDialContextBlocksPrivateIP(t *testing.T) {
 	}
 }
 
+func TestCallbackPrivateAllowlist(t *testing.T) {
+	t.Cleanup(func() { SetCallbackPrivateAllowlist("") })
+
+	// 0.0.0.0/0 必须被忽略，避免误配置导致全网放行
+	SetCallbackPrivateAllowlist("192.168.3.0/24, 10.0.0.5\nfd00::/8 0.0.0.0/0")
+
+	tests := []struct {
+		ip   string
+		want bool
+	}{
+		{ip: "192.168.3.112", want: true},
+		{ip: "192.168.2.1", want: false},
+		{ip: "10.0.0.5", want: true},
+		{ip: "10.0.0.6", want: false},
+		{ip: "8.8.8.8", want: false},
+		{ip: "fd00::1", want: true},
+		{ip: "fe80::1", want: false},
+	}
+
+	for _, tt := range tests {
+		if got := privateAllowed(net.ParseIP(tt.ip)); got != tt.want {
+			t.Fatalf("privateAllowed(%s) = %v, want %v", tt.ip, got, tt.want)
+		}
+	}
+}
+
 func TestAppendQuery(t *testing.T) {
 	tests := []struct {
 		name   string
