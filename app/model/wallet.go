@@ -40,6 +40,13 @@ func (wa *Wallet) SetStatus(status uint8) {
 
 func (wa *Wallet) Validate() error {
 	tradeType := TradeType(wa.TradeType)
+	wa.Address = strings.TrimSpace(wa.Address)
+
+	// X Layer 支持 XKO 前缀的地址显示格式，落库与扫链统一使用标准 0x 地址
+	if tradeType == UsdtXlayer || tradeType == UsdcXlayer {
+		wa.Address = utils.NormalizeEvmAddress(wa.Address)
+	}
+
 	wa.MatchAddr = wa.Address
 
 	switch tradeType {

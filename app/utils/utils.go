@@ -117,6 +117,27 @@ func IsValidEvmAddress(address string) bool {
 	return true
 }
 
+// NormalizeEvmAddress 兼容 X Layer 的 XKO 前缀地址写法（XKO + 40 位十六进制），
+// 统一转换成标准 EVM 0x 地址；其它格式原样返回。
+func NormalizeEvmAddress(address string) string {
+	address = strings.TrimSpace(address)
+
+	if len(address) == 43 && strings.EqualFold(address[:3], "xko") {
+		core := address[3:]
+		if _, err := hex.DecodeString(core); err == nil {
+
+			return "0x" + core
+		}
+	}
+
+	if len(address) == 42 && strings.HasPrefix(address, "0X") {
+
+		return "0x" + address[2:]
+	}
+
+	return address
+}
+
 func IsValidSolanaAddress(address string) bool {
 	data := base58.Decode(address)
 

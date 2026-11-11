@@ -124,3 +124,28 @@ func TestIsAllowedCallbackURL(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeEvmAddress(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "xko upper", in: "XKO6b458ce9a7a29344c087697a87df155cf7128611", want: "0x6b458ce9a7a29344c087697a87df155cf7128611"},
+		{name: "xko lower", in: "xko70586beeb7b7aa2e7966df9c8493c6cbfd75c625", want: "0x70586beeb7b7aa2e7966df9c8493c6cbfd75c625"},
+		{name: "xko mixed", in: "Xko70586BeEB7b7Aa2e7966DF9c8493C6CbFd75C625", want: "0x70586BeEB7b7Aa2e7966DF9c8493C6CbFd75C625"},
+		{name: "trim spaces", in: "  XKO6b458ce9a7a29344c087697a87df155cf7128611  ", want: "0x6b458ce9a7a29344c087697a87df155cf7128611"},
+		{name: "0x unchanged", in: "0x6b458ce9a7a29344c087697a87df155cf7128611", want: "0x6b458ce9a7a29344c087697a87df155cf7128611"},
+		{name: "0X normalized", in: "0X6b458ce9a7a29344c087697a87df155cf7128611", want: "0x6b458ce9a7a29344c087697a87df155cf7128611"},
+		{name: "xko with 0x invalid", in: "XKO0x70586BeEB7b7Aa2e7966DF9c8493C6CbFd75C625", want: "XKO0x70586BeEB7b7Aa2e7966DF9c8493C6CbFd75C625"},
+		{name: "xko non hex", in: "XKOzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz", want: "XKOzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NormalizeEvmAddress(tt.in); got != tt.want {
+				t.Fatalf("NormalizeEvmAddress(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
