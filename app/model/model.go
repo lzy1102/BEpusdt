@@ -15,6 +15,9 @@ import (
 var Db *gorm.DB
 var err error
 
+// infoFilePath 后台登录信息文件路径，与 SQLite 数据库同目录
+var infoFilePath string
+
 type Id struct {
 	ID int64 `gorm:"column:id;primaryKey;autoIncrement;not null;comment:主键ID" json:"id"`
 }
@@ -37,6 +40,8 @@ func initSqlite(db string) error {
 
 		return fmt.Errorf("创建数据库目录失败：%w", err)
 	}
+
+	infoFilePath = filepath.Join(filepath.Dir(db), "info.txt")
 
 	dsn := fmt.Sprintf("%s?cache=shared&mode=rwc"+
 		"&_pragma=cache_size(-32000)"+ // 32MB 缓存，平衡内存占用

@@ -47,6 +47,8 @@ var Reset = &cli.Command{
 		fmt.Println("请妥善保存以上信息！")
 		fmt.Println("-------------------------------")
 
+		model.WriteInfoFile(username, password, entrance)
+
 		return nil
 	},
 }

@@ -431,5 +431,8 @@ func (Auth) SetPassword(ctx *gin.Context) {
 	model.SetK(model.AdminPassword, string(hash))
 	cache.Set(conf.AdminTokenK, "", -1)
 
+	// 密码已变更，部署信息文件不再保留旧明文密码
+	model.WriteInfoFile(model.GetK(model.AdminUsername), "", model.GetK(model.AdminSecure))
+
 	base.Ok(ctx, "修改成功，请重新登录")
 }

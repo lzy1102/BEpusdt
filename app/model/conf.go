@@ -213,6 +213,44 @@ func ConfInit() {
 	fmt.Println()
 
 	Db.Create(&rows)
+
+	WriteInfoFile(username, password, secure)
+}
+
+// WriteInfoFile 把后台入口、用户名、密码写入部署信息文件。
+// 默认与 SQLite 数据库同目录（持久化挂载目录），可用 BEPUSDT_INFO 指定其它路径。
+// 密码传空字符串时表示已由用户修改，文件里不再保留明文。
+func WriteInfoFile(username, password, entrance string) {
+	path := strings.TrimSpace(os.Getenv("BEPUSDT_INFO"))
+	if path == "" {
+		path = infoFilePath
+	}
+	if path == "" {
+		path = "info.txt"
+	}
+
+	var pwd = password
+	if pwd == "" {
+		pwd = "(已通过后台修改，请使用新密码)"
+	}
+
+	content := fmt.Sprintf("BEpusdt 部署信息\n"+
+		"================\n"+
+		"生成时间: %s\n\n"+
+		"后台入口: %s\n"+
+		"  完整地址形如: http://<服务器IP>:<端口>%s\n"+
+		"用户名: %s\n"+
+		"密码: %s\n",
+		time.Now().Format(time.DateTime), entrance, entrance, username, pwd)
+
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "写入部署信息文件失败 %s：%v\n", path, err)
+
+		return
+	}
+	_ = os.Chmod(path, 0o600)
+
+	fmt.Printf("后台登录信息已保存：%s\n", path)
 }
 
 func AuthToken() string {
